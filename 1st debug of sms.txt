@@ -1,0 +1,140 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <HardwareSerial.h>
+
+// ====== WiFi Credentials ======
+const char* ssid = "Jun&Sonet";
+const char* password = "Blackassasin_12";
+
+// ====== API Endpoint (⚠️ change 127.0.0.1 to your PC's local IP) ======
+const char* apiUrl = "http://192.168.0.106:8000/api/payments";
+
+// ====== SIM800L Serial Setup ======
+HardwareSerial sim800l(1); // use UART1
+
+// Numbers to send SMS to
+const char* phoneNumbers[] = {
+  "+639061839221",
+  "+639354104806",
+  "+639669324562"
+};
+int phoneCount = 3;
+
+// ====== Function to read response from SIM800L ======
+String readResponse(unsigned long timeout = 5000) {
+  String response = "";
+  unsigned long start = millis();
+  while (millis() - start < timeout) {
+    while (sim800l.available()) {
+      response += (char)sim800l.read();
+    }
+  }
+  return response;
+}
+
+// ====== Function to send SMS ======
+bool sendSMS(const String& number, const String& message) {
+  Serial.println("=== Sending SMS to " + number + " ===");
+
+  sim800l.println("AT+CMGF=1"); // Set SMS text mode
+  delay(500);
+  sim800l.println("AT+CMGS=\"" + number + "\"");
+  delay(500);
+
+  sim800l.print(message);
+  delay(500);
+
+  sim800l.write(26); // CTRL+Z to send
+  Serial.println("…Waiting for network response…");
+
+  String resp = readResponse(20000);
+  Serial.println(resp);
+
+  if (resp.indexOf("OK") != -1 || resp.indexOf("+CMGS:") != -1) {
+    Serial.println("✅ Sent Successfully!");
+    delay(8000);
+    return true;
+  } else {
+    Serial.println("❌ Failed to Send.");
+    return false;
+  }
+}
+
+// ====== Fetch JSON from API and send SMS ======
+void fetchAndSendSMS() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("❌ WiFi not connected!");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(apiUrl);
+
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("📩 API Response: " + payload);
+
+      // Parse JSON array
+      StaticJsonDocument<8192> doc;
+      DeserializationError err = deserializeJson(doc, payload);
+
+      if (err) {
+        Serial.print("❌ JSON parse error: ");
+        Serial.println(err.c_str());
+        return;
+      }
+
+      // Loop over each payment object
+      for (JsonObject payment : doc.as<JsonArray>()) {
+        String msg = "Payment ID: " + String((int)payment["id"]) + "\n";
+        msg += "User: " + String((int)payment["user"]) + "\n";
+        msg += "Amount: " + String(payment["amount"].as<const char*>()) + "\n";
+        msg += "Status: " + String(payment["status"].as<const char*>()) + "\n";
+        msg += "Method: " + String(payment["payment_method"].as<const char*>());
+
+        Serial.println("📨 Sending message: ");
+        Serial.println(msg);
+        Serial.println("------------------------");
+
+        // Send to all numbers
+        for (int i = 0; i < phoneCount; i++) {
+          sendSMS(phoneNumbers[i], msg);
+          delay(5000); // small delay between SMS
+        }
+      }
+    }
+  } else {
+    Serial.printf("❌ HTTP GET failed, code: %d\n", httpCode);
+  }
+
+  http.end();
+}
+
+// ====== Setup ======
+void setup() {
+  Serial.begin(115200);
+  sim800l.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17
+
+  Serial.println("Connecting WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\n✅ WiFi connected!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+  delay(2000);
+  fetchAndSendSMS();
+}
+
+// ====== Loop ======
+void loop() {
+  // nothing, only run once
+}
